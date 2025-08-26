@@ -1,10 +1,16 @@
-# exaOCR
+# exaOCR - Simple OCR for PDFs/Images/Word/Excel Files with FastAPI support.
 
 ## Overview
 
 exaOCR is a web application built with [Streamlit](https://streamlit.io/) and hosted in a Docker container, designed to process multiple files (PDFs, images, TXT, CSV, or Word documents) by converting them to PDF, applying Optical Character Recognition (OCR) using [OCRmyPDF](https://github.com/ocrmypdf/OCRmyPDF), and generating Markdown output using [PyMuPDF4LLM](https://github.com/yourusername/PyMuPDF4LLM). The output is sanitized for clean text and table formatting, making it ideal for feeding into a Large Language Model (LLM) for embedding generation. The app supports parallel processing for efficiency, displays results in a Markdown table, and provides a ZIP file of all Markdown outputs. It includes a real-time progress bar, total elapsed time, per-file processing time, and page counts for PDFs.
 
 The app is optimized for deployment on an Ubuntu 24.04 LTS server with a multi-core CPU (e.g., 24-thread Intel Xeon E5-2630 v2) and 64GB RAM, but can be adjusted for other hardware configurations.
+
+We have plans to make it so a lot of other formats are supported. Stay tuned.
+
+## Current Stage
+
+- **Proof of Concept**: At this stage, the aim to ensure files are converting the fastest way possible on CPU only. Follow [pdfLLM](https://github.com/ikantkode/pdfLLM) for a full RAG app pipeline.
 
 ## Features
 
