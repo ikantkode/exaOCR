@@ -138,13 +138,6 @@ The app is optimized for a server with a 24-thread CPU and 64GB RAM. To adapt fo
   - Adjust OCR settings for complex PDFs.
 - Monitoring: Use `htop` and `free -m`.
 
-## Troubleshooting
-
-- ``: Download OCRed PDFs to verify text layers.
-- **Slow Processing**: Reduce `max_workers` or add batching.
-- **Poor Table Output**: Consider switching to `marker-pdf`.
-- **Memory Issues**: Limit Docker resources or reduce `max_workers`.
-
 ## LLM Embedding Considerations
 
 - Markdown output is sanitized for clean LLM input.
