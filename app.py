@@ -1,4 +1,5 @@
-import streamlit as st
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse, FileResponse
 import subprocess
 import os
 import tempfile
@@ -10,17 +11,15 @@ import zipfile
 import io
 import time
 import re
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
+import uuid
 
-st.title("OCR and Convert to Markdown")
+app = FastAPI(title="OCR and Markdown Conversion API")
 
-st.write("Upload one or more PDFs, images (JPG/PNG/JPEG/TIFF/BMP), TXT, CSV, or Word (DOCX/DOC) files. The app will convert each to PDF if needed, apply OCR using OCRmyPDF, and convert to Markdown with table support. Results are processed in parallel and available as a ZIP file for LLM embedding.")
+# Store OCRed PDFs temporarily using UUIDs
+ocr_pdf_storage = {}
 
-force_ocr = st.checkbox("Force OCR on all pages (may overwrite existing text)", value=True)
-
-uploaded_files = st.file_uploader("Choose files", type=['pdf', 'jpg', 'png', 'jpeg', 'tiff', 'bmp', 'txt', 'csv', 'docx', 'doc'], accept_multiple_files=True)
-
-def process_file(uploaded_file, force_ocr: bool) -> Tuple[str, Optional[str], Optional[bytes], Optional[str], float, int]:
+def process_file(uploaded_file: UploadFile, force_ocr: bool) -> Tuple[str, Optional[str], Optional[bytes], Optional[str], float, int]:
     """
     Process a single file: Convert to PDF, apply OCR, convert to Markdown.
     Returns (original_name, md_text, ocr_pdf_bytes, error, processing_time, page_count).
@@ -29,9 +28,9 @@ def process_file(uploaded_file, force_ocr: bool) -> Tuple[str, Optional[str], Op
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             # Save uploaded file to temp path
-            input_path = os.path.join(tmpdir, uploaded_file.name)
+            input_path = os.path.join(tmpdir, uploaded_file.filename)
             with open(input_path, "wb") as f:
-                f.write(uploaded_file.getvalue())
+                f.write(uploaded_file.file.read())
 
             ext = os.path.splitext(input_path)[1].lower()
             pdf_path = os.path.join(tmpdir, "input.pdf")
@@ -48,12 +47,12 @@ def process_file(uploaded_file, force_ocr: bool) -> Tuple[str, Optional[str], Op
                     'libreoffice', '--headless', '--convert-to', 'pdf',
                     '--outdir', tmpdir, input_path
                 ], check=True, capture_output=True)
-                converted_pdf_name = os.path.splitext(uploaded_file.name)[0] + '.pdf'
+                converted_pdf_name = os.path.splitext(uploaded_file.filename)[0] + '.pdf'
                 pdf_path = os.path.join(tmpdir, converted_pdf_name)
                 if not os.path.exists(pdf_path):
                     raise FileNotFoundError(f"Converted PDF not found: {pdf_path}")
             else:
-                return uploaded_file.name, None, None, "Unsupported file type.", time.time() - start_time, 0
+                return uploaded_file.filename, None, None, "Unsupported file type.", time.time() - start_time, 0
 
             # Run OCRmyPDF
             ocr_pdf = os.path.join(tmpdir, "ocr_output.pdf")
@@ -75,7 +74,7 @@ def process_file(uploaded_file, force_ocr: bool) -> Tuple[str, Optional[str], Op
                 md_text = re.sub(r'[^\x00-\x7F]+', '', md_text)  # Remove non-ASCII chars
                 md_text = re.sub(r'\s+', ' ', md_text).strip()  # Normalize whitespace
                 doc.close()
-                return uploaded_file.name, md_text, ocr_pdf_bytes, None, time.time() - start_time, page_count
+                return uploaded_file.filename, md_text, ocr_pdf_bytes, None, time.time() - start_time, page_count
             except Exception as md_error:
                 # Fallback to block-based text extraction for better table structure
                 fallback_text = ""
@@ -95,81 +94,84 @@ def process_file(uploaded_file, force_ocr: bool) -> Tuple[str, Optional[str], Op
                     # Sanitize fallback text
                     fallback_text = re.sub(r'[^\x00-\x7F]+', '', fallback_text)
                     fallback_text = re.sub(r'\s+', ' ', fallback_text).strip()
-                    return uploaded_file.name, fallback_text, ocr_pdf_bytes, f"Markdown conversion failed: {str(md_error)}. Used fallback block-based text extraction. OCR log: {ocr_result.stderr}", time.time() - start_time, page_count
-                return uploaded_file.name, None, ocr_pdf_bytes, f"Markdown conversion failed: {str(md_error)}. No text extracted. OCR log: {ocr_result.stderr}", time.time() - start_time, page_count
+                    return uploaded_file.filename, fallback_text, ocr_pdf_bytes, f"Markdown conversion failed: {str(md_error)}. Used fallback block-based text extraction. OCR log: {ocr_result.stderr}", time.time() - start_time, page_count
+                return uploaded_file.filename, None, ocr_pdf_bytes, f"Markdown conversion failed: {str(md_error)}. No text extracted. OCR log: {ocr_result.stderr}", time.time() - start_time, page_count
 
     except subprocess.CalledProcessError as e:
-        return uploaded_file.name, None, None, f"Process failed: {e.stderr.decode() if e.stderr else str(e)}", time.time() - start_time, 0
+        return uploaded_file.filename, None, None, f"Process failed: {e.stderr.decode() if e.stderr else str(e)}", time.time() - start_time, 0
     except Exception as e:
-        return uploaded_file.name, None, None, str(e), time.time() - start_time, 0
+        return uploaded_file.filename, None, None, str(e), time.time() - start_time, 0
 
-if uploaded_files:
-    num_files = len(uploaded_files)
-    progress_text = st.empty()
-    progress_bar = st.progress(0)
-    timer_text = st.empty()
+@app.post("/upload/")
+async def upload_files(force_ocr: bool = True, files: List[UploadFile] = File(...)):
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
 
-    # Start total timer
     total_start_time = time.time()
     results = []
-    completed = 0
+    ocr_pdf_ids = {}
 
     # Process files in parallel with processes
     with concurrent.futures.ProcessPoolExecutor(max_workers=12) as executor:
-        future_to_file = {executor.submit(process_file, file, force_ocr): file for file in uploaded_files}
-        # Update total elapsed time in real-time
-        while completed < num_files:
-            elapsed = time.time() - total_start_time
-            timer_text.text(f"Total elapsed time: {elapsed:.2f} seconds")
-            time.sleep(1)  # Update every second
-            completed = sum(1 for future in future_to_file if future.done())
-            progress_text.text(f"Processing {completed}/{num_files} files...")
-            progress_bar.progress(completed / num_files)
-
-        # Collect results
+        future_to_file = {executor.submit(process_file, file, force_ocr): file for file in files}
         for future in concurrent.futures.as_completed(future_to_file):
             name, md_text, ocr_pdf_bytes, error, proc_time, page_count = future.result()
-            results.append((name, md_text, ocr_pdf_bytes, error, proc_time, page_count))
-
-    progress_text.text("Processing complete!")
-    timer_text.text(f"Total elapsed time: {time.time() - total_start_time:.2f} seconds")
-
-    # Display results in a Markdown table
-    table = "| File Name | Pages | Processing Time (s) | Status | Content Preview |\n"
-    table += "|-----------|-------|---------------------|--------|-----------------|\n"
-    for name, md_text, ocr_pdf_bytes, error, proc_time, page_count in results:
-        status = "Success" if not error else f"Error: {error}"
-        preview = md_text[:100].replace('\n', ' ') + "..." if md_text else "No content"
-        table += f"| {name} | {page_count} | {proc_time:.2f} | {status} | {preview} |\n"
-    st.markdown(table)
+            pdf_id = str(uuid.uuid4()) if ocr_pdf_bytes else None
+            if pdf_id:
+                ocr_pdf_storage[pdf_id] = ocr_pdf_bytes
+            results.append({
+                "file_name": name,
+                "page_count": page_count,
+                "processing_time_seconds": round(proc_time, 2),
+                "status": "Success" if not error else f"Error: {error}",
+                "content_preview": md_text[:100].replace('\n', ' ') + "..." if md_text else "No content",
+                "markdown_content": md_text,
+                "ocr_pdf_id": pdf_id
+            })
 
     # Create ZIP file in memory for Markdowns
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for name, md_text, ocr_pdf_bytes, error, proc_time, page_count in results:
-            if error:
-                st.error(f"Error processing {name}: {error}")
-            else:
-                st.subheader(f"Converted Text for {name}")
-                st.text_area(f"Content for {name}", md_text, height=300)
-                md_name = os.path.splitext(name)[0] + '.md'
-                zip_file.writestr(md_name, md_text)
+        for result in results:
+            if result["markdown_content"]:
+                md_name = os.path.splitext(result["file_name"])[0] + '.md'
+                zip_file.writestr(md_name, result["markdown_content"])
 
-            # Provide download button for OCRed PDF
-            if ocr_pdf_bytes:
-                st.download_button(
-                    label=f"Download OCRed PDF for {name}",
-                    data=ocr_pdf_bytes,
-                    file_name=f"ocr_{name}",
-                    mime="application/pdf"
-                )
+    zip_buffer.seek(0)
+    zip_filename = f"markdowns_{int(total_start_time)}.zip"
+    zip_path = os.path.join("/app/output", zip_filename)
+    with open(zip_path, "wb") as f:
+        f.write(zip_buffer.getvalue())
 
-    # Provide download button for ZIP if there are successful conversions
-    if any(md_text for _, md_text, _, _, _, _ in results):
-        zip_buffer.seek(0)
-        st.download_button(
-            label="Download All Markdowns as ZIP",
-            data=zip_buffer,
-            file_name="markdowns.zip",
-            mime="application/zip"
-        )
+    total_time = time.time() - total_start_time
+
+    return {
+        "total_processing_time_seconds": round(total_time, 2),
+        "results": results,
+        "zip_download_url": f"/download-zip/{zip_filename}"
+    }
+
+@app.get("/download-zip/{filename}")
+async def download_zip(filename: str):
+    file_path = os.path.join("/app/output", filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="ZIP file not found")
+    return FileResponse(file_path, media_type="application/zip", filename=filename)
+
+@app.get("/download-ocr-pdf/{pdf_id}")
+async def download_ocr_pdf(pdf_id: str):
+    ocr_pdf_bytes = ocr_pdf_storage.get(pdf_id)
+    if not ocr_pdf_bytes:
+        raise HTTPException(status_code=404, detail="OCR PDF not found")
+    return FileResponse(
+        path=io.BytesIO(ocr_pdf_bytes),
+        media_type="application/pdf",
+        filename=f"ocr_{pdf_id}.pdf"
+    )
+
+@app.delete("/cleanup/{pdf_id}")
+async def cleanup_ocr_pdf(pdf_id: str):
+    if pdf_id in ocr_pdf_storage:
+        del ocr_pdf_storage[pdf_id]
+        return {"message": f"OCR PDF {pdf_id} removed from storage"}
+    raise HTTPException(status_code=404, detail="OCR PDF not found")

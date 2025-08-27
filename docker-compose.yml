@@ -1,8 +1,30 @@
 version: '3.8'
 
 services:
-  ocr-app:
-    build: .
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./output:/app/output
+    networks:
+      - ocr-network
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
     ports:
       - "7601:7601"
-    command: ["streamlit", "run", "app.py", "--server.port=7601", "--server.address=0.0.0.0"]
+    volumes:
+      - ./output:/app/output
+    depends_on:
+      - fastapi
+    networks:
+      - ocr-network
+
+networks:
+  ocr-network:
+    driver: bridge

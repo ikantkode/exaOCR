@@ -4,12 +4,6 @@ FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y \
     python3.12 \
     python3-pip \
-    tesseract-ocr \
-    tesseract-ocr-eng \
-    ghostscript \
-    libreoffice \
-    fonts-dejavu \
-    unpaper \
     && rm -rf /var/lib/apt/lists/*
 
 # Create persistent output directory
@@ -23,10 +17,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Copy the app code
-COPY app.py .
+COPY streamlit_app.py .
 
-# Expose FastAPI port
-EXPOSE 8000
+# Expose Streamlit port
+EXPOSE 7601
 
-# Run FastAPI app with uvicorn
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run Streamlit app
+CMD ["streamlit", "run", "streamlit_app.py", "--server.port=7601", "--server.address=0.0.0.0"]
