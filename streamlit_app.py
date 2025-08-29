@@ -3,6 +3,7 @@ import httpx
 import time
 import io
 import os
+import json
 
 # Set page config for a clean, centered layout like combinepdf.com
 st.set_page_config(page_title="OCR and Convert to Markdown", layout="centered")
@@ -49,38 +50,36 @@ else:
             # Prepare files for FastAPI
             files = [("files", (file.name, file.getvalue(), file.type)) for file in uploaded_files]
 
-            # Status box with state management
-            with st.status("Processing files...", expanded=True) as status:
-                st.write("Connecting to FastAPI service...")
+            # Show spinner during processing
+            with st.spinner("Connecting to FastAPI service..."):
                 try:
-                    with httpx.Client(timeout=1800.0) as client:
+                    with httpx.Client(timeout=httpx.Timeout(1800.0, connect=60.0, read=600.0, write=60.0)) as client:
                         response = client.post(
                             "http://fastapi:8000/upload/",
                             files=files,
                             params={"force_ocr": force_ocr}
                         )
 
-                    # Check response before parsing JSON
+                    # Check response status
                     if response.status_code != 200:
                         st.error(f"API error: Status {response.status_code}, Content: {response.text[:200]}..., Headers: {response.headers}")
-                        status.update(label="Processing failed", state="error")
+                        progress_text.markdown("**Processing failed!**")
                         st.stop()
 
+                    # Parse JSON response
                     try:
                         data = response.json()
-                    except ValueError as e:
-                        st.error(f"API response could not be parsed as JSON: {str(e)}\nContent: {response.text[:200]}...\nHeaders: {response.headers}")
-                        status.update(label="Processing failed", state="error")
+                    except json.JSONDecodeError as e:
+                        st.error(f"Failed to parse API response: {str(e)}\nContent: {response.text[:200]}...\nHeaders: {response.headers}")
+                        progress_text.markdown("**Processing failed!**")
                         st.stop()
 
-                    total_time = data["total_processing_time_seconds"]
-                    results = data["results"]
+                    total_time = data.get("total_processing_time_seconds", 0.0)
+                    results = data.get("results", [])
 
-                    completed = len(results)
                     progress_text.markdown(f"**Processing complete!**")
                     progress_bar.progress(1.0)
                     timer_text.markdown(f"**Total elapsed time:** {total_time:.2f} seconds")
-                    status.update(label="Processing complete!", state="complete")
 
                     # Results section
                     with st.container():
@@ -110,20 +109,44 @@ else:
                                 st.error(f"Error: {result['status']}")
 
                             # Download OCRed PDF
-                            if result["ocr_pdf_id"]:
-                                with httpx.Client(timeout=1800.0) as client:
-                                    pdf_response = client.get(f"http://fastapi:8000/download-ocr-pdf/{result['ocr_pdf_id']}")
-                                if pdf_response.status_code == 200:
-                                    st.download_button(
-                                        label="Download OCRed PDF",
-                                        data=pdf_response.content,
-                                        file_name=f"ocr_{result['file_name']}",
-                                        mime="application/pdf"
-                                    )
-                                else:
-                                    st.error(f"Failed to download OCRed PDF: Status {pdf_response.status_code}, Content: {pdf_response.text[:200]}...")
+                            if result.get("ocr_pdf_id"):
+                                try:
+                                    with httpx.Client(timeout=60.0) as client:
+                                        pdf_response = client.get(f"http://fastapi:8000/download-ocr-pdf/{result['ocr_pdf_id']}")
+                                    if pdf_response.status_code == 200:
+                                        st.download_button(
+                                            label="Download OCRed PDF",
+                                            data=pdf_response.content,
+                                            file_name=f"ocr_{result['file_name']}",
+                                            mime="application/pdf"
+                                        )
+                                    else:
+                                        st.error(f"Failed to download OCRed PDF: Status {pdf_response.status_code}, Content: {pdf_response.text[:200]}...")
+                                except httpx.RequestError as e:
+                                    st.error(f"Failed to download OCRed PDF: {str(e)}")
+
+                            # Download Markdown
+                            if result.get("markdown_id"):
+                                try:
+                                    with httpx.Client(timeout=60.0) as client:
+                                        md_response = client.get(f"http://fastapi:8000/download-markdown/{result['markdown_id']}")
+                                    if md_response.status_code == 200:
+                                        st.download_button(
+                                            label="Download Markdown",
+                                            data=md_response.content,
+                                            file_name=f"{result['file_name'].rsplit('.', 1)[0]}.md",
+                                            mime="text/markdown"
+                                        )
+                                    else:
+                                        st.error(f"Failed to download Markdown: Status {md_response.status_code}, Content: {md_response.text[:200]}...")
+                                except httpx.RequestError as e:
+                                    st.error(f"Failed to download Markdown: {str(e)}")
 
                 except httpx.RequestError as e:
                     st.error(f"Failed to connect to FastAPI service: {str(e)}\nEnsure the FastAPI container is running and accessible at http://fastapi:8000")
-                    status.update(label="Processing failed", state="error")
+                    progress_text.markdown("**Processing failed!**")
+                    st.stop()
+                except Exception as e:
+                    st.error(f"Unexpected error during processing: {str(e)}")
+                    progress_text.markdown("**Processing failed!**")
                     st.stop()
