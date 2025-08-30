@@ -10,7 +10,7 @@ We have plans to make it so a lot of other formats are supported. Stay tuned.
 
 ## Current Stage
 
-- **Proof of Concept**: At this stage, the aim to ensure files are converting the fastest way possible on CPU only. Follow [pdfLLM](https://github.com/ikantkode/pdfLLM) for a full RAG app pipeline.
+- **Proof of Concept**: At this stage, the aim to ensure files are converting the fastest way possible on CPU only. We will be implementing our concepts into [pdfLLM](https://github.com/ikantkode/pdfLLM). Follow pdfLLM for a robust RAG App.
 
 ## Features
 

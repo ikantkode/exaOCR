@@ -7,7 +7,6 @@ import logging
 import json
 import os
 from httpx import RequestError
-import queue
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -274,8 +273,11 @@ if st.session_state.processing_complete and st.session_state.results:
     success_count = sum(1 for result in st.session_state.results if result.get("status") == "Success")
     error_count = len(st.session_state.results) - success_count
     
+    # Calculate total pages processed
+    total_pages = sum(result.get("page_count", 0) for result in st.session_state.results if result.get("status") == "Success")
+    
     if success_count > 0:
-        st.success(f"✅ {success_count} file(s) processed successfully in {st.session_state.total_time:.2f} seconds!")
+        st.success(f"✅ {success_count} file(s) processed successfully ({total_pages} pages) in {st.session_state.total_time:.2f} seconds!")
     if error_count > 0:
         st.error(f"❌ {error_count} file(s) had errors")
     
