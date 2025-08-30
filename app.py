@@ -1,5 +1,6 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 import subprocess
 import os
 import tempfile
@@ -13,6 +14,9 @@ import re
 from typing import Tuple, Optional, List
 import uuid
 import logging
+import threading
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -20,92 +24,134 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="OCR and Markdown Conversion API")
 
-# Store OCRed PDFs and Markdown content in memory
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Store OCRed PDFs, Markdown content, and progress in memory
 ocr_pdf_storage = {}
 md_storage = {}
+progress_storage = {}  # {file_id: {"page_count": int, "pages_processed": int, "failed_pages": list, "status": str}}
+progress_lock = threading.Lock()
+
+# Thread pool for background processing
+executor = ThreadPoolExecutor(max_workers=2)
+
+# Store recent results for progress fallback
+recent_results = {}
 
 def has_embedded_text(pdf_path: str) -> bool:
     """Check if PDF has embedded text."""
-    doc = pymupdf.open(pdf_path)
-    for page in doc:
-        text = page.get_text("text").strip()
-        if text:
-            doc.close()
-            return True
-    doc.close()
-    return False
+    try:
+        doc = pymupdf.open(pdf_path)
+        for page in doc:
+            text = page.get_text("text").strip()
+            if text:
+                doc.close()
+                return True
+        doc.close()
+        return False
+    except Exception as e:
+        logger.error(f"Error checking embedded text: {e}")
+        return False
 
 def clean_markdown(md_text: str) -> str:
-    """Clean Markdown output: normalize spaces, remove excessive dashes, format tables."""
+    """Clean Markdown output: normalize spaces, remove excessive dashes, format tables, remove artifacts."""
+    if not md_text:
+        return ""
+    
     # Remove non-ASCII characters
     md_text = re.sub(r'[^\x00-\x7F]+', '', md_text)
+    # Remove common artifacts (asterisks, repeating characters)
+    md_text = re.sub(r'[\*\+\-=]{2,}', '', md_text)
     # Normalize multiple spaces to single space
     md_text = re.sub(r'\s+', ' ', md_text).strip()
     # Replace excessive dashes with single section break
     md_text = re.sub(r'-{3,}', '\n---\n', md_text)
-    # Clean table formatting: ensure consistent pipes and align columns
-    lines = md_text.split('\n')
-    cleaned_lines = []
-    in_table = False
-    table_rows = []
-    for line in lines:
-        line = line.strip()
-        if line.startswith('|'):
-            in_table = True
-            # Normalize table row: remove extra spaces around pipes
-            parts = [part.strip() for part in line.split('|') if part.strip()]
-            if parts:
-                cleaned_line = '|' + '|'.join(parts) + '|'
-                table_rows.append(cleaned_line)
-        else:
-            if in_table and line:
-                in_table = False
-                # Ensure table has header separator
-                if table_rows and len(table_rows) > 1:
-                    header = table_rows[0]
-                    num_cols = len(header.split('|')) - 2  # Exclude leading/trailing pipes
-                    table_rows.insert(1, '|' + '|'.join(['---'] * num_cols) + '|')
-                cleaned_lines.extend(table_rows)
-                table_rows = []
-                cleaned_lines.append('---')
-            if line:
-                cleaned_lines.append(line)
-    if in_table and table_rows:
-        # Finalize any remaining table
-        if len(table_rows) > 1:
-            header = table_rows[0]
-            num_cols = len(header.split('|')) - 2
-            table_rows.insert(1, '|' + '|'.join(['---'] * num_cols) + '|')
-        cleaned_lines.extend(table_rows)
-    return '\n'.join(cleaned_lines).strip()
+    
+    return md_text
 
-def process_page(page_pdf_path: str, output_path: str, force_ocr: bool, has_text: bool) -> Optional[str]:
-    """Process a single page with OCRmyPDF, return error message if failed."""
-    logger.info(f"Processing page: {page_pdf_path} -> {output_path}")
-    ocr_args = ['ocrmypdf', '-l', 'eng', '--tesseract-timeout', '100', '--jobs', '2', '--optimize', '0']
+def update_progress(file_id: str, pages_processed: int, status: str = "processing"):
+    """Update progress for a file."""
+    with progress_lock:
+        if file_id in progress_storage:
+            progress_storage[file_id]["pages_processed"] = pages_processed
+            progress_storage[file_id]["status"] = status
+
+def process_page(page_pdf_path: str, output_path: str, force_ocr: bool, has_text: bool, file_id: str, page_num: int) -> Optional[str]:
+    """Process a single page with OCRmyPDF."""
+    logger.info(f"Processing page {page_num + 1}: {page_pdf_path}")
+    
+    ocr_args = [
+        'ocrmypdf', '-l', 'eng', '--tesseract-timeout', '100', 
+        '--jobs', '1', '--optimize', '0', '--output-type', 'pdf'
+    ]
+    
     if not has_text and force_ocr:
         ocr_args.append('--force-ocr')
     else:
         ocr_args.append('--skip-text')
+    
     if not has_text:
         ocr_args.extend(['--deskew', '--clean'])
+    
     ocr_args.extend([page_pdf_path, output_path])
+    
     try:
         start_time = time.time()
-        result = subprocess.run(ocr_args, check=True, capture_output=True, text=True)
-        logger.info(f"OCR completed for {page_pdf_path} in {time.time() - start_time:.2f}s")
+        result = subprocess.run(ocr_args, check=True, capture_output=True, text=True, timeout=300)
+        logger.info(f"OCR completed for page {page_num + 1} in {time.time() - start_time:.2f}s")
+        
+        # Update progress
+        update_progress(file_id, page_num + 1, "processing")
         return None
+        
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr if isinstance(e.stderr, str) else e.stderr.decode('utf-8') if e.stderr else str(e)
-        logger.error(f"OCR failed for {page_pdf_path}: {error_msg}")
-        return f"OCR failed: {error_msg}"
+        error_msg = e.stderr if e.stderr else str(e)
+        logger.warning(f"Initial OCR failed for page {page_num + 1}: {error_msg}")
+        
+        # Retry with --force-ocr if skip-text failed
+        if '--skip-text' in ocr_args:
+            logger.info(f"Retrying with --force-ocr for page {page_num + 1}")
+            ocr_args = [
+                'ocrmypdf', '-l', 'eng', '--tesseract-timeout', '100', 
+                '--jobs', '1', '--optimize', '0', '--output-type', 'pdf', 
+                '--force-ocr', page_pdf_path, output_path
+            ]
+            
+            try:
+                start_time = time.time()
+                result = subprocess.run(ocr_args, check=True, capture_output=True, text=True, timeout=300)
+                logger.info(f"OCR retry succeeded for page {page_num + 1} in {time.time() - start_time:.2f}s")
+                update_progress(file_id, page_num + 1, "processing")
+                return None
+            except subprocess.CalledProcessError as retry_e:
+                retry_error_msg = retry_e.stderr if retry_e.stderr else str(retry_e)
+                logger.error(f"OCR retry failed for page {page_num + 1}: {retry_error_msg}")
+                return f"Page {page_num + 1}: OCR retry failed: {retry_error_msg}"
+        else:
+            logger.error(f"OCR failed for page {page_num + 1}: {error_msg}")
+            return f"Page {page_num + 1}: OCR failed: {error_msg}"
+    
+    except subprocess.TimeoutExpired:
+        logger.error(f"OCR timed out for page {page_num + 1}")
+        return f"Page {page_num + 1}: OCR timed out"
 
-def process_file(file_content: bytes, filename: str, force_ocr: bool) -> Tuple[str, Optional[str], Optional[bytes], Optional[str], float, int]:
+def process_file(file_content: bytes, filename: str, force_ocr: bool, file_id: str) -> Tuple[str, Optional[str], Optional[bytes], Optional[str], float, int]:
     """
     Process a single file: Convert to PDF, apply OCR per page concurrently, convert to Markdown.
-    Returns (filename, md_text, ocr_pdf_bytes, error, processing_time, page_count).
     """
     start_time = time.time()
+    md_text = None
+    ocr_pdf_bytes = None
+    error = None
+    page_count = 0
+    
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             # Save file content to temp path
@@ -117,7 +163,7 @@ def process_file(file_content: bytes, filename: str, force_ocr: bool) -> Tuple[s
             ext = os.path.splitext(input_path)[1].lower()
             pdf_path = os.path.join(tmpdir, "input.pdf")
 
-            render_start = time.time()
+            # Convert to PDF if needed
             if ext == '.pdf':
                 pdf_path = input_path
             elif ext in ['.jpg', '.jpeg', '.png', '.tiff', '.bmp']:
@@ -126,26 +172,34 @@ def process_file(file_content: bytes, filename: str, force_ocr: bool) -> Tuple[s
                     f.write(img2pdf.convert(input_path))
             elif ext in ['.txt', '.csv', '.docx', '.doc']:
                 logger.info(f"Converting document to PDF: {input_path}")
-                subprocess.run([
+                result = subprocess.run([
                     'libreoffice', '--headless', '--convert-to', 'pdf',
                     '--outdir', tmpdir, input_path
-                ], check=True, capture_output=True)
+                ], check=True, capture_output=True, text=True, timeout=300)
                 converted_pdf_name = os.path.splitext(filename)[0] + '.pdf'
                 pdf_path = os.path.join(tmpdir, converted_pdf_name)
                 if not os.path.exists(pdf_path):
                     raise FileNotFoundError(f"Converted PDF not found: {pdf_path}")
             else:
                 return filename, None, None, "Unsupported file type.", time.time() - start_time, 0
-            logger.info(f"Rendering completed in {time.time() - render_start:.2f}s")
 
             # Check for embedded text
             has_text = has_embedded_text(pdf_path)
             logger.info(f"PDF has embedded text: {has_text}")
 
             # Split PDF into pages
-            split_start = time.time()
             doc = pymupdf.open(pdf_path)
             page_count = doc.page_count
+            
+            # Initialize progress for this file
+            with progress_lock:
+                progress_storage[file_id] = {
+                    "page_count": page_count, 
+                    "pages_processed": 0, 
+                    "failed_pages": [],
+                    "status": "processing"
+                }
+            
             page_paths = []
             for page_num in range(page_count):
                 page_pdf = os.path.join(tmpdir, f"page_{page_num + 1}.pdf")
@@ -153,128 +207,191 @@ def process_file(file_content: bytes, filename: str, force_ocr: bool) -> Tuple[s
                 page_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
                 page_doc.save(page_pdf)
                 page_doc.close()
-                page_paths.append((page_pdf, os.path.join(tmpdir, f"ocr_page_{page_num + 1}.pdf")))
+                page_paths.append((page_pdf, os.path.join(tmpdir, f"ocr_page_{page_num + 1}.pdf"), page_num))
+            
             doc.close()
-            logger.info(f"Splitting PDF into {page_count} pages in {time.time() - split_start:.2f}s")
 
-            # Process pages concurrently
-            ocr_start = time.time()
-            logger.info(f"Processing {page_count} pages concurrently")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(page_count, 8)) as executor:
-                futures = [executor.submit(process_page, page_path, ocr_path, force_ocr, has_text) for page_path, ocr_path in page_paths]
-                results = concurrent.futures.wait(futures)
-                for future, (page_path, ocr_path) in zip(results.done, page_paths):
-                    error = future.result()
-                    if error:
-                        return filename, None, None, f"Page processing failed: {error} for {ocr_path}", time.time() - start_time, page_count
-                    if not os.path.exists(ocr_path):
-                        return filename, None, None, f"no such file: '{ocr_path}'", time.time() - start_time, page_count
-            logger.info(f"OCR completed in {time.time() - ocr_start:.2f}s")
+            # Process pages concurrently with limited workers
+            page_errors = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(page_count, 4)) as page_executor:
+                futures = {
+                    page_executor.submit(process_page, page_path, ocr_path, force_ocr, has_text, file_id, page_num): 
+                    (page_path, ocr_path, page_num) 
+                    for page_path, ocr_path, page_num in page_paths
+                }
+                
+                for future in concurrent.futures.as_completed(futures):
+                    page_path, ocr_path, page_num = futures[future]
+                    try:
+                        error_msg = future.result()
+                        if error_msg:
+                            page_errors.append(error_msg)
+                            logger.warning(f"Page error: {error_msg}")
+                        if not os.path.exists(ocr_path):
+                            page_errors.append(f"Page {page_num + 1}: No output file created")
+                    except Exception as e:
+                        page_errors.append(f"Page {page_num + 1}: {str(e)}")
+                        logger.error(f"Page processing exception: {e}")
 
+            if page_errors:
+                error = "; ".join(page_errors[:3])  # Show first 3 errors only
+                if len(page_errors) > 3:
+                    error += f"... and {len(page_errors) - 3} more errors"
+
+            # Update status to indicate markdown conversion
+            update_progress(file_id, page_count, "converting")
+            
             # Reassemble OCRed pages
-            reassemble_start = time.time()
-            ocr_pdf = os.path.join(tmpdir, "ocr_output.pdf")
-            logger.info(f"Reassembling OCRed pages into: {ocr_pdf}")
             final_doc = pymupdf.open()
-            for _, ocr_path in page_paths:
-                page_doc = pymupdf.open(ocr_path)
-                final_doc.insert_pdf(page_doc)
-                page_doc.close()
-            final_doc.save(ocr_pdf)
+            for _, ocr_path, _ in page_paths:
+                if os.path.exists(ocr_path):
+                    page_doc = pymupdf.open(ocr_path)
+                    final_doc.insert_pdf(page_doc)
+                    page_doc.close()
+            
+            ocr_pdf_path = os.path.join(tmpdir, "ocr_output.pdf")
+            final_doc.save(ocr_pdf_path)
             final_doc.close()
-            logger.info(f"Reassembly completed in {time.time() - reassemble_start:.2f}s")
 
             # Read OCRed PDF
-            logger.info(f"Reading OCRed PDF: {ocr_pdf}")
-            with open(ocr_pdf, "rb") as f:
+            with open(ocr_pdf_path, "rb") as f:
                 ocr_pdf_bytes = f.read()
 
-            # Try Markdown conversion with improved settings
-            markdown_start = time.time()
+            # Convert to Markdown
             try:
-                logger.info(f"Converting to Markdown: {ocr_pdf}")
-                md_text = pymupdf4llm.to_markdown(ocr_pdf, write_images=False, dpi=300)
+                md_text = pymupdf4llm.to_markdown(ocr_pdf_path, write_images=False, dpi=300)
                 md_text = clean_markdown(md_text)
-                logger.info(f"Markdown conversion completed in {time.time() - markdown_start:.2f}s")
-                return filename, md_text, ocr_pdf_bytes, None, time.time() - start_time, page_count
             except Exception as md_error:
-                # Fallback to block-based text extraction
-                logger.info(f"Falling back to pymupdf block-based text extraction: {ocr_pdf}")
-                doc = pymupdf.open(ocr_pdf)
-                fallback_text = ""
-                for page in doc:
-                    try:
-                        blocks = page.get_text("blocks", flags=pymupdf.TEXTFLAGS_TEXT)
-                        for block in blocks:
-                            text = block[4].strip()
-                            if text:
-                                # Attempt to detect table-like structures
-                                if '|' in text:
-                                    fallback_text += f"[Page {page.number + 1} Table]\n{text}\n\n"
-                                else:
-                                    fallback_text += f"[Page {page.number + 1} Block]\n{text}\n\n"
-                            else:
-                                fallback_text += f"[Page {page.number + 1}: No extractable text in block]\n\n"
-                    except Exception as page_error:
-                        fallback_text += f"[Page {page.number + 1}: Error extracting text: {str(page_error)}]\n\n"
+                logger.warning(f"Markdown conversion failed, using fallback: {md_error}")
+                # Fallback to simple text extraction
+                doc = pymupdf.open(ocr_pdf_path)
+                md_text = ""
+                for page_num, page in enumerate(doc):
+                    text = page.get_text("text").strip()
+                    if text:
+                        md_text += f"# Page {page_num + 1}\n\n{text}\n\n---\n\n"
                 doc.close()
-                if fallback_text.strip():
-                    fallback_text = clean_markdown(fallback_text)
-                    logger.info(f"Fallback Markdown completed in {time.time() - markdown_start:.2f}s")
-                    return filename, fallback_text, ocr_pdf_bytes, f"Markdown conversion failed: {str(md_error)}. Used fallback block-based text extraction.", time.time() - start_time, page_count
-                logger.info(f"No text extracted in fallback: {time.time() - markdown_start:.2f}s")
-                return filename, None, ocr_pdf_bytes, f"Markdown conversion failed: {str(md_error)}. No text extracted.", time.time() - start_time, page_count
+                md_text = clean_markdown(md_text)
+
+            # Mark as completed
+            update_progress(file_id, page_count, "completed")
 
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr if isinstance(e.stderr, str) else e.stderr.decode('utf-8') if e.stderr else str(e)
+        error_msg = e.stderr if e.stderr else str(e)
         logger.error(f"Process failed: {error_msg}")
-        return filename, None, None, f"Process failed: {error_msg}", time.time() - start_time, 0
+        error = f"Process failed: {error_msg}"
+        update_progress(file_id, 0, "error")
+    except subprocess.TimeoutExpired:
+        logger.error("Process timed out")
+        error = "Process timed out"
+        update_progress(file_id, 0, "error")
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        return filename, None, None, str(e), time.time() - start_time, 0
+        error = f"Unexpected error: {str(e)}"
+        update_progress(file_id, 0, "error")
+    
+    processing_time = time.time() - start_time
+    return filename, md_text, ocr_pdf_bytes, error, processing_time, page_count
+
+async def process_files_async(files_data, force_ocr):
+    """Process files asynchronously in thread pool"""
+    loop = asyncio.get_event_loop()
+    
+    tasks = []
+    for file_info in files_data:
+        task = loop.run_in_executor(
+            executor,
+            process_file,
+            file_info['content'],
+            file_info['filename'],
+            force_ocr,
+            file_info['file_id']
+        )
+        tasks.append(task)
+    
+    return await asyncio.gather(*tasks)
 
 @app.post("/upload/")
-async def upload_files(force_ocr: bool = True, files: List[UploadFile] = File(...)):
+async def upload_files(background_tasks: BackgroundTasks, force_ocr: bool = True, files: List[UploadFile] = File(...)):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
-    total_start_time = time.time()
-    results = []
+    # Prepare file data
+    files_data = []
+    for file in files:
+        file_content = await file.read()
+        file_id = str(uuid.uuid4())
+        files_data.append({
+            'content': file_content,
+            'filename': file.filename,
+            'file_id': file_id
+        })
 
-    # Process files in batches of 4 to prevent overload
-    batch_size = 4
-    for i in range(0, len(files), batch_size):
-        batch = files[i:i + batch_size]
-        logger.info(f"Processing batch of {len(batch)} files")
-        file_data = [(await file.read(), file.filename) for file in batch]
-        with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
-            futures = [executor.submit(process_file, content, filename, force_ocr) for content, filename in file_data]
-            for future, (content, filename) in zip(concurrent.futures.as_completed(futures), file_data):
-                name, md_text, ocr_pdf_bytes, error, proc_time, page_count = future.result()
-                pdf_id = str(uuid.uuid4()) if ocr_pdf_bytes else None
-                md_id = str(uuid.uuid4()) if md_text else None
-                if pdf_id:
-                    ocr_pdf_storage[pdf_id] = ocr_pdf_bytes
-                if md_id:
-                    md_storage[md_id] = md_text.encode('utf-8')
-                results.append({
-                    "file_name": name,
-                    "page_count": page_count,
-                    "processing_time_seconds": round(proc_time, 2),
-                    "status": "Success" if not error else f"Error: {error}",
-                    "content_preview": md_text[:100].replace('\n', ' ') + "..." if md_text else "No content",
-                    "markdown_content": md_text,
-                    "ocr_pdf_id": pdf_id,
-                    "markdown_id": md_id
-                })
-                logger.info(f"Completed processing file: {name} in {proc_time:.2f}s")
-
-    total_time = time.time() - total_start_time
-    logger.info(f"Total processing time: {total_time:.2f} seconds for {len(results)} files")
+    # Process files asynchronously
+    results = await process_files_async(files_data, force_ocr)
+    
+    # Format results
+    formatted_results = []
+    total_time = 0
+    
+    for filename, md_text, ocr_pdf_bytes, error, proc_time, page_count in results:
+        total_time += proc_time
+        
+        pdf_id = str(uuid.uuid4()) if ocr_pdf_bytes else None
+        md_id = str(uuid.uuid4()) if md_text else None
+        
+        if pdf_id:
+            ocr_pdf_storage[pdf_id] = ocr_pdf_bytes
+        if md_id:
+            md_storage[md_id] = md_text.encode('utf-8') if md_text else b''
+        
+        formatted_results.append({
+            "file_name": filename,
+            "page_count": page_count,
+            "processing_time_seconds": round(proc_time, 2),
+            "status": "Success" if not error else f"Error: {error}",
+            "content_preview": (md_text[:100] + "...") if md_text and len(md_text) > 100 else (md_text or "No content"),
+            "markdown_content": md_text,
+            "ocr_pdf_id": pdf_id,
+            "markdown_id": md_id,
+            "file_id": next(f['file_id'] for f in files_data if f['filename'] == filename)
+        })
 
     return {
         "total_processing_time_seconds": round(total_time, 2),
-        "results": results
+        "results": formatted_results
+    }
+
+@app.get("/progress/{file_id}")
+async def get_progress(file_id: str):
+    with progress_lock:
+        progress = progress_storage.get(file_id)
+    
+    if not progress:
+        # If progress data doesn't exist, check recent results
+        result = recent_results.get(file_id)
+        if result:
+            page_count = result.get("page_count", 0)
+            return {
+                "file_id": file_id,
+                "page_count": page_count,
+                "pages_processed": page_count,  # All pages processed
+                "failed_pages": []
+            }
+        
+        # If we can't find the file, return default values
+        return {
+            "file_id": file_id,
+            "page_count": 0,
+            "pages_processed": 0,
+            "failed_pages": []
+        }
+    
+    return {
+        "file_id": file_id,
+        "page_count": progress["page_count"],
+        "pages_processed": progress["pages_processed"],
+        "failed_pages": progress["failed_pages"]
     }
 
 @app.get("/download-ocr-pdf/{pdf_id}")
@@ -285,7 +402,7 @@ async def download_ocr_pdf(pdf_id: str):
     return StreamingResponse(
         content=io.BytesIO(ocr_pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=ocr_{pdf_id}.pdf"}
+        headers={"Content-Disposition": f"attachment; filename=ocr_document.pdf"}
     )
 
 @app.get("/download-markdown/{md_id}")
@@ -296,13 +413,27 @@ async def download_markdown(md_id: str):
     return StreamingResponse(
         content=io.BytesIO(md_bytes),
         media_type="text/markdown",
-        headers={"Content-Disposition": f"attachment; filename=converted_{md_id}.md"}
+        headers={"Content-Disposition": f"attachment; filename=converted_document.md"}
     )
 
-@app.delete("/cleanup/{pdf_id}")
-async def cleanup_ocr_pdf(pdf_id: str):
-    if pdf_id in ocr_pdf_storage:
-        del ocr_pdf_storage[pdf_id]
-    if pdf_id in md_storage:
-        del md_storage[pdf_id]
-    return {"message": f"OCR PDF and Markdown {pdf_id} removed from storage"}
+@app.delete("/cleanup/{file_id}")
+async def cleanup_file(file_id: str):
+    """Clean up stored files by file ID"""
+    if file_id in ocr_pdf_storage:
+        del ocr_pdf_storage[file_id]
+    if file_id in md_storage:
+        del md_storage[file_id]
+    if file_id in progress_storage:
+        with progress_lock:
+            del progress_storage[file_id]
+    if file_id in recent_results:
+        del recent_results[file_id]
+    return {"message": f"Cleaned up resources for {file_id}"}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": time.time()}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

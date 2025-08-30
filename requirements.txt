@@ -4,6 +4,8 @@ streamlit==1.38.0
 ocrmypdf==16.5.0
 img2pdf==0.5.1
 pymupdf4llm==0.0.17
+pymupdf==1.24.10
 pillow==10.4.0
 python-multipart==0.0.9
 httpx==0.27.2
+python-magic==0.4.27

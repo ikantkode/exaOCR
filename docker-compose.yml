@@ -9,6 +9,13 @@ services:
       - ./output:/app/output
     networks:
       - ocr-network
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   streamlit:
     build:
@@ -22,7 +29,13 @@ services:
       - fastapi
     networks:
       - ocr-network
+    environment:
+      - PYTHONUNBUFFERED=1
 
 networks:
   ocr-network:
     driver: bridge
+
+volumes:
+  output:
+    driver: local
