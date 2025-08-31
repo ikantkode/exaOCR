@@ -10,7 +10,7 @@ Built with **FastAPI + Streamlit**, optimized for **CPU-only environments**, and
 
 ---
 ## Video:
-[![Video Title](http://img.youtube.com/vi/FfBQg5JXk5E/0.jpg)](https://www.youtube.com/watch?v=FfBQg5JXk5E "Video Title")
+[![exaOCR Demo](http://img.youtube.com/vi/FfBQg5JXk5E/0.jpg)](https://www.youtube.com/watch?v=FfBQg5JXk5E "exaOCR Demo")
 ## 🚀 Key Results
 | Metric              | 800-page Contract | 50-page Report |
 |---------------------|-------------------|----------------|
