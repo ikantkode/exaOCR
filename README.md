@@ -5,7 +5,8 @@ exaOCR is a **production-ready, Docker-native OCR pipeline** that transforms **a
 
 Built with **FastAPI + Streamlit**, optimized for **CPU-only environments**, and battle-tested on **800+ page contracts**, exaOCR delivers sub-3-minute processing while preserving **tables, forms, and layout structure**.
 
-> ✅ **Live Demo**: `https://www.youtube.com/watch?v=FfBQg5JXk5E&t=20s` OR deploy & view at http://localhost:7601.
+> ✅ **Live Demo**: Deploy & view at http://localhost:7601.
+> [![Video Title](http://img.youtube.com/vi/FfBQg5JXk5E/0.jpg)](https://www.youtube.com/watch?v=FfBQg5JXk5E "Video Title")
 > 🏗️ **Next Evolution**: [pdfLLM](https://github.com/ikantkode/pdfLLM) – plug-and-play RAG ingestion.
 
 ---
