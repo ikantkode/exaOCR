@@ -1,100 +1,99 @@
-# exaOCR - Ultra-Fast OCR to Markdown Pipeline
+# exaOCR - Fast OCR to Markdown Pipeline
 
-## 📖 Overview
-exaOCR is a **production-ready, Docker-native OCR pipeline** that transforms **any file** (PDF, image, office document) into clean, LLM-ready Markdown in seconds.  
+## Overview
+exaOCR is a production-ready OCR pipeline that converts any file (PDF, image, office document) into clean Markdown quickly. Built with FastAPI and Streamlit, exaOCR is optimized for CPU-only systems and preserves tables, forms, and layout structure.
 
-Built with **FastAPI + Streamlit**, optimized for **CPU-only environments**, and battle-tested on **800+ page contracts**, exaOCR delivers sub-3-minute processing while preserving **tables, forms, and layout structure**.
-
-> ✅ **Live Demo**: Deploy & view at http://localhost:7601.
-> 🏗️ **Next Evolution**: [pdfLLM](https://github.com/ikantkode/pdfLLM) – plug-and-play RAG ingestion.
-
----
-## Video:
-[![exaOCR Demo](http://img.youtube.com/vi/FfBQg5JXk5E/0.jpg)](https://www.youtube.com/watch?v=FfBQg5JXk5E "exaOCR Demo")
-## 🚀 Key Results
-| Metric              | 800-page Contract | 50-page Report |
-|---------------------|-------------------|----------------|
-| **Wall Time**       | ~250 s            | ~15 s          |
-| **Parallel Pages**  | 8 cores           | 8 cores        |
-| **Memory Peak**     | <2 GB             | <500 MB        |
-| **Table Accuracy**  | 95 %+             | 95 %+          |
+Live Demo: [http://localhost:7601](http://localhost:7601)
+Next Evolution: [pdfLLM](https://github.com/ikantkode/pdfLLM)
 
 ---
 
-## 📁 Supported Formats
-| Category   | Extensions                       | Conversion Path       |
-|------------|----------------------------------|-----------------------|
-| **PDF**    | `.pdf`                           | Direct                |
-| **Images** | `.jpg .jpeg .png .tiff .bmp`     | `img2pdf` → PDF       |
-| **Office** | `.doc .docx .txt .csv`           | LibreOffice → PDF     |
-| **Future** | `.xlsx .pptx .rtf`               | Planned               |
+## Video Demo
+[![exaOCR Demo](http://img.youtube.com/vi/FfBQg5JXk5E/0.jpg)](https://www.youtube.com/watch?v=FfBQg5JXk5E)
 
 ---
 
-## ⚙️ Architecture
-```text
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│  Streamlit  │◄────►│  FastAPI    │◄────►│  OCR Core   │
-│   :7601     │      │   :8000     │      │ 12 threads  │
-└─────────────┘      └─────────────┘      └─────────────┘
+## Key Results
+| Metric              | Large Document | Small Document |
+|---------------------|----------------|----------------|
+| Wall Time           | ~250 s         | ~15 s          |
+| Parallel Pages      | 8 cores        | 8 cores        |
+| Memory Peak         | <2 GB          | <500 MB        |
+| Table Accuracy      | 95%+           | 95%+           |
 
-- FastAPI handles file upload, progress, and download.
-- OCRmyPDF + Tesseract adds searchable text.
-- PyMuPDF4LLM extracts Markdown with table preservation.
-- concurrent.futures parallelizes pages across CPU cores.
+---
+
+## Supported Formats
+| Category   | Extensions                   | Conversion Path       |
+|------------|------------------------------|----------------------|
+| PDF        | `.pdf`                        | Direct               |
+| Images     | `.jpg .jpeg .png .tiff .bmp`  | `img2pdf` → PDF      |
+| Office     | `.doc .docx .txt .csv`        | LibreOffice → PDF    |
+| Future     | `.xlsx .pptx .rtf`            | Planned              |
+
+---
+
+## Architecture
+```
+Streamlit <--> FastAPI <--> OCR Core
+
+- FastAPI handles uploads, progress, and downloads
+- OCRmyPDF + Tesseract adds searchable text
+- PyMuPDF4LLM extracts Markdown with table preservation
+- Pages processed in parallel across CPU cores
 ```
 
 ---
 
-## 📦 Quick Start
+## Quick Start
 
-### 1. Clone & Spin Up
+### 1. Clone & Run
 ```bash
 git clone https://github.com/ikantkode/exaOCR.git
 cd exaOCR
 docker compose up --build
 ```
-- Browse to [http://localhost:7601](http://localhost:7601)  
-- Upload files → watch progress bar → download Markdown ZIP.
+- Open [http://localhost:7601](http://localhost:7601)
+- Upload files, watch progress, and download Markdown ZIP
 
-### 2. Production Deploy
+### 2. Production
 ```bash
 docker compose up -d --build
 ```
 
 ---
 
-## 🛠 Hardware Tuning
-| Server Spec   | Recommended max_workers | Batch Size |
-|---------------|-------------------------|------------|
-| 4-core / 8 GB | 4                       | 5 files    |
-| 8-core / 16 GB| 8                       | 10 files   |
-| 24-core / 64 GB| 12                     | 25 files   |
+## Hardware Recommendations
+| CPU / RAM     | Max Workers | Batch Size |
+|---------------|------------|------------|
+| 4-core / 8GB  | 4          | 5 files    |
+| 8-core / 16GB | 8          | 10 files   |
+| 24-core / 64GB| 12         | 25 files   |
 
-In `app.py`:
+Set in `app.py`:
 ```python
-executor = ThreadPoolExecutor(max_workers=12)  # 🔧 Tune here
+executor = ThreadPoolExecutor(max_workers=12)
 ```
 
-Monitor with:
+Monitor resources with:
 ```bash
-htop      # CPU usage
-free -m   # RAM usage
+htop
+free -m
 ```
 
 ---
 
-## 🧩 API Endpoints
-| Endpoint                  | Method | Purpose              |
-|---------------------------|--------|----------------------|
-| `/upload/`                | POST   | Upload files         |
-| `/progress/{file_id}`     | GET    | Real-time progress   |
-| `/download-markdown/{id}` | GET    | Download Markdown    |
-| `/health`                 | GET    | Health check         |
+## API Endpoints
+| Endpoint                  | Method | Purpose             |
+|----------------------------|--------|-------------------|
+| `/upload/`                | POST   | Upload files       |
+| `/progress/{file_id}`     | GET    | Real-time progress |
+| `/download-markdown/{id}` | GET    | Download Markdown  |
+| `/health`                 | GET    | Health check       |
 
 ---
 
-## 🌍 Docker Compose (Production)
+## Docker Compose (Production)
 ```yaml
 version: "3.8"
 services:
@@ -107,7 +106,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G  # Adjust for your box
+          memory: 4G
   streamlit:
     build: .
     ports:
@@ -118,35 +117,35 @@ services:
 
 ---
 
-## 🧪 Performance Baselines
+## Performance Baselines
 | Test Case               | Pages | Time   | CPU Threads |
 |--------------------------|-------|--------|-------------|
-| 10 × PDFs (avg 50 p)    | 500   | 45 s   | 8           |
-| 1 × 800-page contract   | 800   | 250 s  | 8           |
-| 50 × images             | 50    | 30 s   | 8           |
+| 10 PDFs (avg 50 pages)   | 500   | 45 s   | 8           |
+| 1 × 800-page contract    | 800   | 250 s  | 8           |
+| 50 images                | 50    | 30 s   | 8           |
 
 ---
 
-## 🧰 Tech Stack
-| Layer       | Technology                    |
-|-------------|-------------------------------|
-| Frontend    | Streamlit 1.38                |
-| API         | FastAPI                       |
-| OCR         | OCRmyPDF 16.5 + Tesseract     |
-| Markdown    | PyMuPDF4LLM 0.0.17            |
-| Parallelism | concurrent.futures            |
-| Container   | Ubuntu 24.04, Python 3.12     |
+## Tech Stack
+| Layer       | Technology            |
+|------------ |---------------------|
+| Frontend    | Streamlit 1.38       |
+| API         | FastAPI              |
+| OCR         | OCRmyPDF + Tesseract |
+| Markdown    | PyMuPDF4LLM          |
+| Parallelism | concurrent.futures   |
+| Container   | Ubuntu 24.04, Python 3.12 |
 
 ---
 
-## 🚦 Roadmap
-- [ ] Excel/PowerPoint support  
-- ?? Request
+## Roadmap
+- Excel and PowerPoint support  
+- User-requested features
 
 ---
 
-## 📄 License
-MIT – free for personal and commercial use.  
-Dependencies follow their own licenses.
+## License
+MIT – free for personal and commercial use. Dependencies follow their own licenses.  
 
-💡 Issues or PRs? Submit via [GitHub Issues](https://github.com/ikantkode/exaOCR).
+Issues or PRs: [GitHub Issues](https://github.com/ikantkode/exaOCR)
+
