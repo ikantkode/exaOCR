@@ -3,6 +3,7 @@
 ## Overview
 exaOCR is a production-ready OCR pipeline that converts any file (PDF, image, office document) into clean Markdown quickly. Built with FastAPI and Streamlit, exaOCR is optimized for CPU-only systems and preserves tables, forms, and layout structure.
 
+API Documentation Page: [https://ikantkode.github.io/exaOCR](https://ikantkode.github.io/exaOCR)
 Live Demo: [http://localhost:7601](http://localhost:7601)
 Next Evolution: [pdfLLM](https://github.com/ikantkode/pdfLLM)
 
@@ -84,6 +85,8 @@ free -m
 ---
 
 ## API Endpoints
+View Documentation: [https://ikantkode.github.io/exaOCR](https://ikantkode.github.io/exaOCR)
+
 | Endpoint                  | Method | Purpose             |
 |----------------------------|--------|-------------------|
 | `/upload/`                | POST   | Upload files       |
@@ -135,12 +138,6 @@ services:
 | Markdown    | PyMuPDF4LLM          |
 | Parallelism | concurrent.futures   |
 | Container   | Ubuntu 24.04, Python 3.12 |
-
----
-
-## Roadmap
-- Excel and PowerPoint support  
-- User-requested features
 
 ---
 
