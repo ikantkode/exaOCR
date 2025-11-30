@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCR and Markdown Conversion API - Documentation</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #fff;
+        }
+        h1, h2, h3, h4 {
+            color: #2c3e50;
+            margin-top: 1.5em;
+            margin-bottom: 0.5em;
+        }
+        h1 {
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+        h2 {
+            border-bottom: 1px solid #eee;
+            padding-bottom: 8px;
+        }
+        a {
+            color: #3498db;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        code {
+            font-family: Consolas, Monaco, 'Andale Mono', monospace;
+            background-color: #f4f4f4;
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            border: 1px solid #ddd;
+        }
+        pre code {
+            background-color: transparent;
+            padding: 0;
+            border-radius: 0;
+            font-size: 1em;
+        }
+        blockquote {
+            border-left: 4px solid #3498db;
+            padding-left: 20px;
+            margin-left: 0;
+            color: #666;
+            font-style: italic;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        ul, ol {
+            padding-left: 25px;
+        }
+        .toc {
+            background-color: #f9f9f9;
+            border: 1px solid #eee;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 30px;
+        }
+        .toc h3 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+        .toc ul {
+            padding-left: 20px;
+            list-style-type: disc;
+        }
+        .toc li {
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>OCR and Markdown Conversion API</h1>
+    <p>A simple web interface for testing the OCR and Markdown Conversion API.</p>
+
+    <div class="toc">
+        <h3>Table of Contents</h3>
+        <ul>
+            <li><a href="#quick-start">Quick Start</a></li>
+            <li><a href="#api-overview">API Overview</a></li>
+            <li><a href="#api-endpoints">API Endpoints</a>
+                <ul>
+                    <li><a href="#upload-files">Upload Files</a></li>
+                    <li><a href="#check-progress">Check Progress</a></li>
+                    <li><a href="#download-markdown">Download Markdown</a></li>
+                    <li><a href="#cleanup-file">Cleanup File</a></li>
+                    <li><a href="#health-check">Health Check</a></li>
+                </ul>
+            </li>
+            <li><a href="#how-to-use">How to Use</a></li>
+            <li><a href="#understanding-the-response">Understanding the Response</a></li>
+            <li><a href="#configuration">Configuration</a></li>
+            <li><a href="#troubleshooting">Troubleshooting</a></li>
+            <li><a href="#docker-setup">Docker Setup</a></li>
+        </ul>
+    </div>
+
+    <h2 id="quick-start">Quick Start</h2>
+    <ol>
+        <li>Clone this repository</li>
+        <li>Run <code>docker-compose up -d</code></li>
+        <li>Open your browser and navigate to <code>http://localhost:9000</code></li>
+    </ol>
+
+    <h2 id="api-overview">API Overview</h2>
+    <p>The OCR and Markdown Conversion API allows you to convert image files and documents into Markdown format. It provides the following endpoints:</p>
+    <ul>
+        <li>Upload files for OCR processing</li>
+        <li>Check processing progress</li>
+        <li>Download converted Markdown files</li>
+        <li>Clean up stored files</li>
+        <li>Health check</li>
+    </ul>
+
+    <h2 id="api-endpoints">API Endpoints</h2>
+
+    <h3 id="upload-files">Upload Files</h3>
+    <p>Upload one or more files to be processed by the OCR engine.</p>
+    <p><strong>Endpoint:</strong> <code>POST /upload/</code></p>
+    <p><strong>Parameters:</strong></p>
+    <ul>
+        <li><code>files</code> (required): Array of files to upload</li>
+        <li><code>force_ocr</code> (optional): Boolean to force OCR processing even if text is detected (default: true)</li>
+    </ul>
+    <p><strong>Response:</strong></p>
+    <pre><code class="language-json">{
+  "total_processing_time_seconds": 1.39,
+  "results": [
+    {
+      "file_name": "text-image-title.png",
+      "page_count": 1,
+      "processing_time_seconds": 1.39,
+      "status": "Success",
+      "content_preview": "# Page 1\n\n```\nHOW TO COMBINE\nTEXT AND IMAGE\nIN ELEARNING DESIGN\n\n```\n\n-----\n\n---",
+      "markdown_content": "# Page 1\n\n```\nHOW TO COMBINE\nTEXT AND IMAGE\nIN ELEARNING DESIGN\n\n```\n\n-----\n\n---",
+      "ocr_pdf_id": null,
+      "markdown_id": "7f8f10c8-d51b-4773-9db8-5e748f12aa3d",
+      "file_id": "413a9347-79ce-434e-bfac-27eab54db928"
+    }
+  ]
+}</code></pre>
+
+    <h3 id="check-progress">Check Progress</h3>
+    <p>Check the processing status of an uploaded file.</p>
+    <p><strong>Endpoint:</strong> <code>GET /progress/{file_id}</code></p>
+    <p><strong>Parameters:</strong></p>
+    <ul>
+        <li><code>file_id</code> (required): ID of the file to check</li>
+    </ul>
+    <p><strong>Response:</strong></p>
+    <p>A string containing the progress information.</p>
+
+    <h3 id="download-markdown">Download Markdown</h3>
+    <p>Download the converted Markdown file.</p>
+    <p><strong>Endpoint:</strong> <code>GET /download-markdown/{md_id}</code></p>
+    <p><strong>Parameters:</strong></p>
+    <ul>
+        <li><code>md_id</code> (required): ID of the Markdown file to download</li>
+    </ul>
+    <p><strong>Response:</strong></p>
+    <p>A string containing the Markdown content.</p>
+
+    <h3 id="cleanup-file">Cleanup File</h3>
+    <p>Remove a stored file from the server.</p>
+    <p><strong>Endpoint:</strong> <code>DELETE /cleanup/{file_id}</code></p>
+    <p><strong>Parameters:</strong></p>
+    <ul>
+        <li><code>file_id</code> (required): ID of the file to clean up</li>
+    </ul>
+    <p><strong>Response:</strong></p>
+    <p>A string confirming the cleanup operation.</p>
+
+    <h3 id="health-check">Health Check</h3>
+    <p>Check the health status of the API.</p>
+    <p><strong>Endpoint:</strong> <code>GET /health</code></p>
+    <p><strong>Response:</strong></p>
+    <p>A string containing the health status information.</p>
+
+    <h2 id="how-to-use">How to Use</h2>
+    <ol>
+        <li><strong>Upload Files</strong>:
+            <ul>
+                <li>Go to the "Upload File" tab</li>
+                <li>Select one or more files using the file input</li>
+                <li>Choose whether to force OCR processing</li>
+                <li>Click "Upload" to submit the files</li>
+            </ul>
+        </li>
+        <li><strong>Check Progress</strong>:
+            <ul>
+                <li>Go to the "Check Progress" tab</li>
+                <li>Enter the file ID received from the upload response</li>
+                <li>Click "Check Progress" to see the processing status</li>
+            </ul>
+        </li>
+        <li><strong>Download Markdown</strong>:
+            <ul>
+                <li>Go to the "Download Markdown" tab</li>
+                <li>Enter the Markdown ID received from the upload response</li>
+                <li>Click "Download" to retrieve the converted content</li>
+            </ul>
+        </li>
+        <li><strong>Cleanup Files</strong>:
+            <ul>
+                <li>Go to the "Cleanup File" tab</li>
+                <li>Enter the file ID you want to remove</li>
+                <li>Click "Cleanup" to delete the file from the server</li>
+            </ul>
+        </li>
+        <li><strong>Health Check</strong>:
+            <ul>
+                <li>Go to the "Health Check" tab</li>
+                <li>Click "Check Health" to verify the API is running</li>
+            </ul>
+        </li>
+    </ol>
+
+    <h2 id="understanding-the-response">Understanding the Response</h2>
+    <p>When you upload a file, the API returns a JSON response with the following information:</p>
+    <ul>
+        <li><code>total_processing_time_seconds</code>: Total time taken to process all files</li>
+        <li><code>results</code>: Array of processing results for each file
+            <ul>
+                <li><code>file_name</code>: Original name of the uploaded file</li>
+                <li><code>page_count</code>: Number of pages in the document</li>
+                <li><code>processing_time_seconds</code>: Time taken to process this specific file</li>
+                <li><code>status</code>: Processing status (Success, Failed, etc.)</li>
+                <li><code>content_preview</code>: A preview of the extracted content</li>
+                <li><code>markdown_content</code>: The full Markdown content of the processed file</li>
+                <li><code>ocr_pdf_id</code>: ID for the OCR processed PDF (if applicable)</li>
+                <li><code>markdown_id</code>: ID for the Markdown content (used for downloading)</li>
+                <li><code>file_id</code>: ID for the uploaded file (used for progress checking and cleanup)</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h2 id="configuration">Configuration</h2>
+    <p>The API URL is set to <code>http://192.168.1.151:8000</code> by default. You can change this by clicking the "Change" button next to the API URL at the top of the interface.</p>
+
+    <h2 id="troubleshooting">Troubleshooting</h2>
+    <ul>
+        <li>If you receive a connection error, verify that the API server is running and accessible from your network</li>
+        <li>Make sure you're using the correct file_id and markdown_id values when checking progress or downloading content</li>
+        <li>For large files, processing may take some time. Use the progress endpoint to check status</li>
+    </ul>
+
+    <h2 id="docker-setup">Docker Setup</h2>
+    <p>This interface is containerized using Docker. To run it:</p>
+    <ol>
+        <li>Make sure Docker and Docker Compose are installed</li>
+        <li>Run <code>docker-compose up -d</code> in the directory containing the docker-compose.yml file</li>
+        <li>Access the interface at <code>http://localhost:9000</code></li>
+    </ol>
+    <p>To stop the container, run <code>docker-compose down</code>.</p>
+
+</body>
+</html>
