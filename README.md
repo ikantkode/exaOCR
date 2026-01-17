@@ -87,12 +87,122 @@ free -m
 ## API Endpoints
 View Documentation: [https://ikantkode.github.io/exaOCR](https://ikantkode.github.io/exaOCR)
 
-| Endpoint                  | Method | Purpose             |
-|----------------------------|--------|-------------------|
-| `/upload/`                | POST   | Upload files       |
-| `/progress/{file_id}`     | GET    | Real-time progress |
-| `/download-markdown/{id}` | GET    | Download Markdown  |
-| `/health`                 | GET    | Health check       |
+| Endpoint                     | Method   | Purpose                          |
+|-------------------------------|----------|----------------------------------|
+| `/upload/`                    | POST     | Upload files for OCR             |
+| `/batch/{batch_id}/status`    | GET      | Get real-time batch progress     |
+| `/batch/{batch_id}/results`   | GET      | Get batch results when complete  |
+| `/progress/{file_id}`         | GET      | Get per-file progress            |
+| `/download-markdown/{id}`     | GET      | Download Markdown                |
+| `/batch/{batch_id}/cleanup`   | DELETE   | Clean up batch resources         |
+| `/health`                     | GET      | Health check                     |
+
+---
+
+## Batch Processing with Progress Tracking
+
+exaOCR now supports **real-time progress tracking** for batch processing. Upload multiple files and get immediate feedback on processing status.
+
+### How It Works
+
+1. **Upload files** → Get `batch_id` immediately
+2. **Poll for progress** → Track completion in real-time
+3. **Get results** → Retrieve all processed markdown
+
+### Python Example
+
+```python
+import requests
+import time
+
+# 1. Start batch processing (returns immediately)
+files = [("doc1.pdf", open("doc1.pdf", "rb")),
+         ("doc2.pdf", open("doc2.pdf", "rb"))]
+
+response = requests.post(
+    "http://localhost:8000/upload/?force_ocr=true",
+    files=[("files", f) for f in files]
+)
+
+data = response.json()
+batch_id = data["batch_id"]
+print(f"Batch started: {batch_id}")
+print(f"Total files: {data['total_files']}")
+
+# 2. Poll for progress
+while True:
+    status = requests.get(f"http://localhost:8000/batch/{batch_id}/status").json()
+    print(f"Progress: {status['completed_files']}/{status['total_files']} "
+          f"({status['progress_percent']:.1f}%)")
+
+    if status["status"] == "completed":
+        break
+
+    time.sleep(2)  # Poll every 2 seconds
+
+# 3. Get final results
+results = requests.get(f"http://localhost:8000/batch/{batch_id}/results").json()
+
+for result in results["results"]:
+    print(f"{result['file_name']}: {result['status']} - {result['page_count']} pages")
+
+# 4. Download markdown for each file
+for result in results["results"]:
+    if result["markdown_id"]:
+        md = requests.get(f"http://localhost:8000/download-markdown/{result['markdown_id']}")
+        with open(f"{result['file_name']}.md", "wb") as f:
+            f.write(md.content)
+
+# 5. Clean up resources
+requests.delete(f"http://localhost:8000/batch/{batch_id}/cleanup")
+```
+
+### cURL Example
+
+```bash
+# Start batch
+UPLOAD_RESPONSE=$(curl -X POST "http://localhost:8000/upload/?force_ocr=true" \
+  -F "files=@doc1.pdf" \
+  -F "files=@doc2.pdf")
+
+BATCH_ID=$(echo $UPLOAD_RESPONSE | jq -r '.batch_id')
+echo "Batch ID: $BATCH_ID"
+
+# Check status
+curl "http://localhost:8000/batch/$BATCH_ID/status"
+
+# Get results
+curl "http://localhost:8000/batch/$BATCH_ID/results"
+
+# Clean up
+curl -X DELETE "http://localhost:8000/batch/$BATCH_ID/cleanup"
+```
+
+### Batch Status Response
+
+```json
+{
+  "batch_id": "abc-123",
+  "total_files": 54,
+  "completed_files": 23,
+  "in_progress_files": 31,
+  "failed_files": 0,
+  "progress_percent": 42.59,
+  "status": "processing",
+  "elapsed_time_seconds": 125.5,
+  "files": [
+    {
+      "file_id": "uuid-1",
+      "page_count": 10,
+      "pages_processed": 10,
+      "failed_pages": [],
+      "status": "completed"
+    }
+  ]
+}
+```
+
+---
 
 ---
 

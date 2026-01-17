@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import subprocess
@@ -39,6 +39,10 @@ progress_storage = {}
 recent_results = {}
 progress_lock = threading.Lock()
 executor = ThreadPoolExecutor(max_workers=10)
+
+# Batch processing storage
+batch_storage = {}
+batch_lock = threading.Lock()
 
 def has_embedded_text(pdf_path: str) -> bool:
     """Check if PDF has embedded text."""
@@ -311,7 +315,7 @@ def process_single_page(page_data: Tuple[int, str, str, bool, str]) -> Tuple[int
         logger.error(f"Page {page_num + 1}: Unexpected error: {str(e)}")
         return page_num, None, f"Page {page_num + 1}: {str(e)}"
 
-def process_file(file_content: bytes, filename: str, force_ocr: bool, file_id: str) -> Tuple[str, Optional[str], Optional[str], float, int]:
+def process_file(file_content: bytes, filename: str, force_ocr: bool, file_id: str, batch_id: Optional[str] = None) -> Tuple[str, Optional[str], Optional[str], float, int]:
     """Process file with parallel OCR and enhanced table formatting."""
     start_time = time.time()
     md_text = None
@@ -412,101 +416,175 @@ def process_file(file_content: bytes, filename: str, force_ocr: bool, file_id: s
                     error += f"... and {len(page_errors) - 3} more errors"
 
             update_progress(file_id, page_count, "completed")
-            
+
             with progress_lock:
                 recent_results[file_id] = {
                     "page_count": page_count,
                     "status": "completed" if not error else "error"
                 }
 
+            # Update batch progress
+            if batch_id:
+                with batch_lock:
+                    if batch_id in batch_storage:
+                        batch_storage[batch_id]["completed_files"] += 1
+                        batch_storage[batch_id]["file_statuses"][file_id] = "completed" if not error else "error"
+
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr if e.stderr else str(e)
         logger.error(f"Process failed: {error_msg}")
         error = f"Process failed: {error_msg}"
         update_progress(file_id, 0, "error")
+        if batch_id:
+            with batch_lock:
+                if batch_id in batch_storage:
+                    batch_storage[batch_id]["completed_files"] += 1
+                    batch_storage[batch_id]["file_statuses"][file_id] = "error"
     except subprocess.TimeoutExpired:
         logger.error("Process timed out")
         error = "Process timed out"
         update_progress(file_id, 0, "error")
+        if batch_id:
+            with batch_lock:
+                if batch_id in batch_storage:
+                    batch_storage[batch_id]["completed_files"] += 1
+                    batch_storage[batch_id]["file_statuses"][file_id] = "error"
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         error = f"Unexpected error: {str(e)}"
         update_progress(file_id, 0, "error")
+        if batch_id:
+            with batch_lock:
+                if batch_id in batch_storage:
+                    batch_storage[batch_id]["completed_files"] += 1
+                    batch_storage[batch_id]["file_statuses"][file_id] = "error"
 
     processing_time = time.time() - start_time
     return filename, md_text, error, processing_time, page_count
 
+def process_batch_background(files_data: list, force_ocr: bool, batch_id: str):
+    """Process batch in background and store results."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        tasks = []
+        for file_info in files_data:
+            task = loop.run_in_executor(
+                executor,
+                process_file,
+                file_info['content'],
+                file_info['filename'],
+                force_ocr,
+                file_info['file_id'],
+                batch_id  # Pass batch_id for progress tracking
+            )
+            tasks.append(task)
+
+        results = loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+
+        # Store results for batch
+        batch_results = []
+        total_time = 0
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                filename = files_data[i]['filename']
+                file_id = files_data[i]['file_id']
+                batch_results.append({
+                    "file_name": filename,
+                    "page_count": 0,
+                    "processing_time_seconds": 0,
+                    "status": f"Error: {str(result)}",
+                    "content_preview": "No content",
+                    "markdown_content": None,
+                    "markdown_id": None,
+                    "file_id": file_id
+                })
+            else:
+                filename, md_text, error, proc_time, page_count = result
+                file_id = files_data[i]['file_id']
+                total_time += proc_time
+
+                md_id = str(uuid.uuid4()) if md_text else None
+                if md_id:
+                    md_storage[md_id] = md_text.encode('utf-8') if md_text else b''
+
+                batch_results.append({
+                    "file_name": filename,
+                    "page_count": page_count,
+                    "processing_time_seconds": round(proc_time, 2),
+                    "status": "Success" if not error else f"Error: {error}",
+                    "content_preview": (md_text[:100] + "...") if md_text and len(md_text) > 100 else (md_text or "No content"),
+                    "markdown_content": md_text,
+                    "markdown_id": md_id,
+                    "file_id": file_id
+                })
+
+        # Store results in batch_storage
+        with batch_lock:
+            if batch_id in batch_storage:
+                batch_storage[batch_id]["results"] = batch_results
+                batch_storage[batch_id]["total_processing_time"] = round(total_time, 2)
+                batch_storage[batch_id]["status"] = "completed"
+
+        logger.info(f"Batch {batch_id} completed: {len(batch_results)} files processed in {total_time:.2f}s")
+
+    finally:
+        loop.close()
+
 @app.post("/upload/")
-async def upload_files(force_ocr: bool = True, files: List[UploadFile] = File(...)):
+async def upload_files(force_ocr: bool = True, background_tasks: BackgroundTasks = BackgroundTasks(), files: List[UploadFile] = File(...)):
+    """
+    Upload files for batch OCR processing.
+
+    Returns immediately with a batch_id. Use GET /batch/{batch_id}/status to check progress.
+    """
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
+    # Generate batch_id
+    batch_id = str(uuid.uuid4())
+
+    # Prepare file data
     files_data = []
+    file_ids = []
     for file in files:
         file_content = await file.read()
         file_id = str(uuid.uuid4())
+        file_ids.append(file_id)
         files_data.append({
             'content': file_content,
             'filename': file.filename,
             'file_id': file_id
         })
 
-    loop = asyncio.get_event_loop()
-    tasks = []
+    # Initialize batch storage
+    with batch_lock:
+        batch_storage[batch_id] = {
+            "batch_id": batch_id,
+            "total_files": len(files),
+            "completed_files": 0,
+            "file_ids": file_ids,
+            "file_statuses": {fid: "pending" for fid in file_ids},
+            "status": "processing",
+            "start_time": time.time(),
+            "results": None,
+            "total_processing_time": None
+        }
 
-    for file_info in files_data:
-        task = loop.run_in_executor(
-            executor,
-            process_file,
-            file_info['content'],
-            file_info['filename'],
-            force_ocr,
-            file_info['file_id']
-        )
-        tasks.append(task)
+    # Start background processing
+    background_tasks.add_task(process_batch_background, files_data, force_ocr, batch_id)
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info(f"Batch {batch_id} started with {len(files)} files")
 
-    formatted_results = []
-    total_time = 0
-
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            filename = files_data[i]['filename']
-            formatted_results.append({
-                "file_name": filename,
-                "page_count": 0,
-                "processing_time_seconds": 0,
-                "status": f"Error: {str(result)}",
-                "content_preview": "No content",
-                "markdown_content": None,
-                "ocr_pdf_id": None,
-                "markdown_id": None,
-                "file_id": files_data[i]['file_id']
-            })
-        else:
-            filename, md_text, error, proc_time, page_count = result
-            total_time += proc_time
-
-            md_id = str(uuid.uuid4()) if md_text else None
-            if md_id:
-                md_storage[md_id] = md_text.encode('utf-8') if md_text else b''
-
-            formatted_results.append({
-                "file_name": filename,
-                "page_count": page_count,
-                "processing_time_seconds": round(proc_time, 2),
-                "status": "Success" if not error else f"Error: {error}",
-                "content_preview": (md_text[:100] + "...") if md_text and len(md_text) > 100 else (md_text or "No content"),
-                "markdown_content": md_text,
-                "ocr_pdf_id": None,
-                "markdown_id": md_id,
-                "file_id": files_data[i]['file_id']
-            })
-
+    # Return immediately
     return {
-        "total_processing_time_seconds": round(total_time, 2),
-        "results": formatted_results
+        "batch_id": batch_id,
+        "total_files": len(files),
+        "file_ids": file_ids,
+        "status": "processing",
+        "message": "Batch processing started. Use GET /batch/{batch_id}/status to check progress."
     }
 
 @app.get("/progress/{file_id}")
@@ -570,13 +648,135 @@ async def cleanup_file(file_id: str):
     
     return {"message": f"Cleaned up resources for {file_id}", "cleaned": cleaned}
 
+@app.get("/batch/{batch_id}/status")
+async def get_batch_status(batch_id: str):
+    """
+    Get the status of a batch processing job.
+
+    Returns aggregate progress and per-file status.
+    """
+    with batch_lock:
+        batch = batch_storage.get(batch_id)
+
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    # Calculate progress percentage
+    total = batch["total_files"]
+    completed = batch["completed_files"]
+    progress_pct = (completed / total * 100) if total > 0 else 0
+
+    # Get per-file progress details
+    file_progress = []
+    for file_id in batch["file_ids"]:
+        with progress_lock:
+            file_prog = progress_storage.get(file_id)
+
+        if file_prog:
+            file_progress.append({
+                "file_id": file_id,
+                "page_count": file_prog["page_count"],
+                "pages_processed": file_prog["pages_processed"],
+                "failed_pages": file_prog["failed_pages"],
+                "status": file_prog["status"]
+            })
+        else:
+            # File hasn't started yet
+            file_progress.append({
+                "file_id": file_id,
+                "page_count": 0,
+                "pages_processed": 0,
+                "failed_pages": [],
+                "status": batch["file_statuses"].get(file_id, "pending")
+            })
+
+    return {
+        "batch_id": batch_id,
+        "total_files": total,
+        "completed_files": completed,
+        "in_progress_files": total - completed,
+        "failed_files": sum(1 for s in batch["file_statuses"].values() if s == "error"),
+        "progress_percent": round(progress_pct, 2),
+        "status": batch["status"],
+        "elapsed_time_seconds": round(time.time() - batch["start_time"], 2),
+        "files": file_progress
+    }
+
+@app.get("/batch/{batch_id}/results")
+async def get_batch_results(batch_id: str):
+    """
+    Get the final results of a completed batch.
+
+    Returns all processed files with markdown content.
+    """
+    with batch_lock:
+        batch = batch_storage.get(batch_id)
+
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    if batch["status"] != "completed":
+        return {
+            "batch_id": batch_id,
+            "status": batch["status"],
+            "message": "Batch not completed yet. Use GET /batch/{batch_id}/status to check progress.",
+            "total_files": batch["total_files"],
+            "completed_files": batch["completed_files"]
+        }
+
+    return {
+        "batch_id": batch_id,
+        "total_files": batch["total_files"],
+        "completed_files": batch["completed_files"],
+        "total_processing_time_seconds": batch["total_processing_time"],
+        "status": batch["status"],
+        "results": batch["results"]
+    }
+
+@app.delete("/batch/{batch_id}/cleanup")
+async def cleanup_batch(batch_id: str):
+    """Clean up stored batch data by batch ID"""
+    cleaned = []
+    with batch_lock:
+        if batch_id in batch_storage:
+            batch = batch_storage[batch_id]
+
+            # Clean up all markdown files in this batch
+            if batch.get("results"):
+                for result in batch["results"]:
+                    md_id = result.get("markdown_id")
+                    if md_id and md_id in md_storage:
+                        del md_storage[md_id]
+                        cleaned.append(f"md_id:{md_id}")
+
+            # Clean up batch storage
+            del batch_storage[batch_id]
+            cleaned.append("batch_storage")
+
+            # Clean up progress storage for files in this batch
+            for file_id in batch.get("file_ids", []):
+                if file_id in progress_storage:
+                    with progress_lock:
+                        del progress_storage[file_id]
+                    cleaned.append(f"progress:{file_id}")
+                if file_id in recent_results:
+                    del recent_results[file_id]
+                    cleaned.append(f"recent_results:{file_id}")
+
+    return {"message": f"Cleaned up resources for batch {batch_id}", "cleaned": cleaned}
+
 @app.get("/health")
 async def health_check():
+    with batch_lock:
+        active_batches = sum(1 for b in batch_storage.values() if b["status"] == "processing")
+
     return {
-        "status": "healthy", 
+        "status": "healthy",
         "timestamp": time.time(),
         "active_files": len(progress_storage),
-        "stored_results": len(recent_results)
+        "stored_results": len(recent_results),
+        "active_batches": active_batches,
+        "total_batches": len(batch_storage)
     }
 
 if __name__ == "__main__":
