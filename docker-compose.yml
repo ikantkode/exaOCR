@@ -11,6 +11,8 @@ services:
       - ocr-network
     environment:
       - PYTHONUNBUFFERED=1
+      - DISABLE_MODEL_SOURCE_CHECK=True
+      - LOG_LEVEL=INFO
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
